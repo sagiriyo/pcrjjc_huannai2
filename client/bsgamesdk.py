@@ -22,7 +22,7 @@ captcha_header = {"Content-Type": "application/json",
 gt_wait = 90
 
 # 手动过码网站地址
-manual_captch_site = "https://yousite.com"
+manual_captch_site = "https://cc004.github.io/geetest/geetest.html?"
 
 
 async def sendpost(url, data):

@@ -1,3 +1,18 @@
+import logging
+
+# 禁用 jjc 模块的日志输出
+logging.getLogger('hoshino.modules.pcrjjc_huannai2').setLevel(logging.WARNING)
+logging.getLogger('hoshino.modules.pcrjjc_huannai2.utils').setLevel(logging.WARNING)
+logging.getLogger('hoshino.modules.pcrjjc_huannai2.query').setLevel(logging.WARNING)
+logging.getLogger('hoshino.modules.pcrjjc_huannai2.tool').setLevel(logging.WARNING)
+logging.getLogger('hoshino.modules.pcrjjc_huannai2.client').setLevel(logging.WARNING)
+
+# 特别禁用 utils 模块的日志
+logging.getLogger('utils').setLevel(logging.WARNING)
+
+# 禁用 nonebot 的 INFO 日志
+logging.getLogger('nonebot').setLevel(logging.WARNING)
+
 import asyncio
 from datetime import datetime
 import os
@@ -16,11 +31,9 @@ from .tool import refresh_account
 from .img.text2img import image_draw
 from .database.dal import pcr_sqla, PCRBind
 
-from .client.pcrclient import init_device_id
-
-sv_b = Service('b服竞技场推送', help_="发送【竞技场帮助】", bundle='pcr查询')
-sv_qu = Service('渠服竞技场推送', help_="发送【渠竞技场帮助】", bundle='pcr查询')
-sv_tw = Service('台服竞技场推送', help_="发送【台竞技场帮助】", bundle='pcr查询')
+sv_b = Service('b服竞技场推送', help_="发送【竞技场帮助】", enable_on_default=False,bundle='pcr查询')
+sv_qu = Service('渠服竞技场推送', help_="发送【渠竞技场帮助】",enable_on_default=False, bundle='pcr查询')
+sv_tw = Service('台服竞技场推送', help_="发送【台竞技场帮助】", enable_on_default=False,bundle='pcr查询')
 
 
 @sv_tw.on_fullmatch('台竞技场帮助')
@@ -58,7 +71,8 @@ jjc/pjjc当天排名上升次数、最后登录时间。
 0表示关闭，1表示10分钟cd，仅在2点半~3点报，
 2表示10分钟cd，全天报；3表示1分钟cd全天报。
 每天5点会把上线提醒等级3改成2，有需要的可以再次手动开启。
-11）在本群推送（限群聊发送，无需好友）'''
+10）在本群推送（限群聊发送，无需好友）
+11）换私聊推送（限私聊发送，需好友）'''
     if not priv.check_priv(ev, priv.SUPERUSER):
         pic = image_draw(sv_help)
     else:
@@ -82,7 +96,7 @@ async def pcrjjc_number(bot: HoshinoBot, ev: CQEvent):
     await bot.send(ev, f'当前竞技场已订阅的账号数量为【{len(await pcr_sqla.get_bind(platform_id))}】个')
 
 
-@sv_b.on_rex(r'^竞技场查询 ?(\d+)?$')
+@sv_b.on_rex(r'^(?:jjccx|jjc|竞技场查询) ?(\d+)?$')
 @sv_qu.on_rex(r'^渠竞技场查询 ?(\d+)?$')
 @sv_tw.on_rex(r'^台竞技场查询 ?(\d+)?$')
 async def on_query_arena(bot: HoshinoBot, ev: CQEvent):
@@ -103,8 +117,75 @@ async def on_query_arena(bot: HoshinoBot, ev: CQEvent):
         for i, bind in enumerate(query_list):
             query_dict[bind.pcrid] = i
     query_cache[ev.user_id] = []
-    await query_all(query_list, platform_id, user_query, {"bot": bot, "ev": ev, "info": query_dict, "platform": platform_id}, Priority.query_user.value)
+    await query_all(query_list, platform_id, user_query, {"bot": bot, "ev": ev, "info": query_dict, "platform": platform_id, "show_group": False}, Priority.query_user.value)
 
+@sv_b.on_notice('notify.poke')
+async def poke_notice(session: NoticeSession):
+    if session.ctx['target_id'] == session.ctx['self_id']:
+        qid = session.ctx['user_id']
+        group_id = session.ctx.get('group_id')
+        
+        if group_id:
+            bot = session.bot
+            
+            # 创建一个更完整的模拟事件对象
+            class FakeEvent:
+                def __init__(self):
+                    self.message_type = 'group'
+                    self.user_id = qid
+                    self.group_id = group_id
+                    self.raw_message = ''
+                    self.sender = {'user_id': qid}
+                    self.self_id = session.ctx['self_id']
+            
+            fake_ev = FakeEvent()
+            
+            # 根据当前服务直接指定平台ID
+            if session.event.service == sv_b:
+                platform_id = Platform.b_id.value
+            else:
+                platform_id = Platform.b_id.value  # 默认B服
+            
+            query_dict = {}
+            query_list = await pcr_sqla.get_bind(platform_id, qid)
+            
+            if not query_list:
+                await bot.send_group_msg(group_id=group_id, message='您还没有绑定竞技场！')
+                return
+                
+            for i, bind in enumerate(query_list):
+                query_dict[bind.pcrid] = i
+                
+            query_cache[qid] = []
+            await query_all(query_list, platform_id, user_query, {
+                "bot": bot, 
+                "ev": fake_ev, 
+                "info": query_dict, 
+                "platform": platform_id, 
+                "show_group": False
+            }, Priority.query_user.value)
+
+# 新增的查群号指令
+@sv_b.on_rex(r'^查群号 ?(\d+)?$')
+async def on_query_group(bot: HoshinoBot, ev: CQEvent):
+    ret: re.Match = ev['match']
+    qid = get_qid(ev)
+    platform_id = get_platform_id(ev)
+    query_dict: Dict[int, int] = {}
+    if ret.group(1):
+        valid_len = 13 if platform_id != Platform.tw_id.value else 10
+        if (len(ret.group(1))) != (valid_len):
+            await bot.send(ev, f'位数不对，uid是{valid_len}位的！')
+            return
+        pcrid = int(ret.group(1))
+        query_list = [PCRBind(platform=platform_id, pcrid=pcrid)]  # 手动查询的列表
+        query_dict[pcrid] = 0
+    else:
+        query_list: List[PCRBind] = await pcr_sqla.get_bind(platform_id, qid)
+        for i, bind in enumerate(query_list):
+            query_dict[bind.pcrid] = i
+    query_cache[ev.user_id] = []
+    await query_all(query_list, platform_id, user_query, {"bot": bot, "ev": ev, "info": query_dict, "platform": platform_id, "show_group": True}, Priority.query_user.value)
 
 @sv_b.on_fullmatch('竞技场订阅状态')
 @sv_qu.on_fullmatch('渠竞技场订阅状态')
@@ -143,9 +224,9 @@ async def send_arena_sub_status(bot: HoshinoBot, ev: CQEvent):
     await bot.send(ev, f'[CQ:image,file={image_draw(reply)}]')
 
 
-@sv_b.on_rex(r'^(?:击剑|竞技场)记录 ?(\d)?$')
-@sv_qu.on_rex(r'^渠(?:击剑|竞技场)记录 ?(\d)?$')
-@sv_tw.on_rex(r'^台(?:击剑|竞技场)记录 ?(\d)?$')
+@sv_b.on_rex(r'^(?:击剑|竞技场)记录 ?(\d+)?$')
+@sv_qu.on_rex(r'^渠(?:击剑|竞技场)记录 ?(\d+)?$')
+@sv_tw.on_rex(r'^台(?:击剑|竞技场)记录 ?(\d+)?$')
 async def jjc_log_query(bot: HoshinoBot, ev: CQEvent):
     qid = get_qid(ev)
     platform_id = get_platform_id(ev)
@@ -166,7 +247,7 @@ async def jjc_log_query(bot: HoshinoBot, ev: CQEvent):
     member_info = await bot.get_group_member_info(group_id=ev.group_id, user_id=qid)
     if jjc_historys := await pcr_sqla.get_history(platform_id, qid, user_bind[pcrid_id_input-1].pcrid if pcrid_id_input else 0):
         msg = f'\t\t\t\t【{member_info["card"] or member_info["nickname"]}的击剑记录】\n' + "\n".join(
-            [f"{datetime.fromtimestamp(history.date).strftime('%H:%M:%S')} {history.name} {'jjc ' if not history.item else 'pjjc'}：{history.before}->{history.after} [{'▲' if history.before > history.after else '▽'}{abs(history.after-history.before)}]"
+            [f"{datetime.fromtimestamp(history.date).strftime('%m-%d %H:%M:%S')} {history.name} {'jjc ' if not history.item else 'pjjc'}：{history.before}->{history.after} [{'▲' if history.before > history.after else '▽'}{abs(history.after-history.before)}]"
              for history in jjc_historys])
 
     await bot.send(ev, f'[CQ:image,file={image_draw(msg)}]')
@@ -174,7 +255,7 @@ async def jjc_log_query(bot: HoshinoBot, ev: CQEvent):
 # ========================================竞技场绑定========================================
 
 
-@sv_b.on_rex(r'^竞技场绑定 ?(\d+) ?(\S+)?$')
+@sv_b.on_rex(r'^(?:bd|jjcbd|竞技场绑定) ?(\d+) ?(\S+)?$')
 @sv_qu.on_rex(r'^渠竞技场绑定 ?(\d+) ?(\S+)?$')
 @sv_tw.on_rex(r'^台竞技场绑定 ?(\d+) ?(\S+)?$')
 async def on_arena_bind(bot: HoshinoBot, ev: CQEvent):
@@ -188,7 +269,7 @@ async def on_arena_bind(bot: HoshinoBot, ev: CQEvent):
                 {"bot": bot, "ev": ev, "info": {"platform": platform_id, "pcrid": pcr_id, "name": nickname, "group": ev.group_id, "user_id": ev.user_id}}, Priority.bind.value)
 
 
-@sv_b.on_rex(r'^删除竞技场绑定 ?(\d)?$')
+@sv_b.on_rex(r'^删除竞技场绑定 ?(\d+)?$')
 @sv_qu.on_rex(r'^渠删除竞技场绑定 ?(\d)?$')
 @sv_tw.on_rex(r'^台删除竞技场绑定 ?(\d)?$')
 async def delete_arena_sub(bot: HoshinoBot, ev: CQEvent):
@@ -228,9 +309,9 @@ async def pcrjjc_del(bot: HoshinoBot, ev: CQEvent):
 # ========================================竞技场设置========================================
 
 
-@sv_b.on_rex(r'^竞技场修改昵称 ?(\d)? (\S+)$')
-@sv_qu.on_rex(r'^渠竞技场修改昵称 ?(\d)? (\S+)$')
-@sv_tw.on_rex(r'^台竞技场修改昵称 ?(\d)? (\S+)$')
+@sv_b.on_rex(r'^竞技场修改昵称 ?(\d+)? (\S+)$')
+@sv_qu.on_rex(r'^渠竞技场修改昵称 ?(\d+)? (\S+)$')
+@sv_tw.on_rex(r'^台竞技场修改昵称 ?(\d+)? (\S+)$')
 async def change_nickname(bot: HoshinoBot, ev: CQEvent):
     qid = ev.user_id
     platform_id = get_platform_id(ev)
@@ -276,7 +357,7 @@ async def private_notice(session: NoticeSession):
         await session.send('私聊推送用户已达上限！')
         return
     if session.ctx['message_type'] != 'private':
-        await session.send('仅限好友私聊使用！')
+        await session.send('加我好友，私聊发【换私聊推送】！')
         return
     bot = get_bot()
     qid = session.ctx['user_id']
@@ -321,7 +402,7 @@ async def set_noticeType(bot: HoshinoBot, ev: CQEvent):
     await bot.send(ev, reply)
 
 
-@sv_b.on_rex(r'^竞技场设置 ?([01]{3}[0123]) ?(\d)?$')
+@sv_b.on_rex(r'^竞技场设置 ?([01]{3}[0123]) ?(\d+)?$')
 @sv_qu.on_rex(r'^渠竞技场设置 ?([01]{3}[0123]) ?(\d)?$')
 @sv_tw.on_rex(r'^台竞技场设置 ?([01]{3}[0123]) ?(\d)?$')
 async def set_allType(bot: HoshinoBot, ev: CQEvent):
@@ -384,23 +465,27 @@ async def no_private(bot: HoshinoBot, ev: CQEvent):
     await bot.send(ev, '所有设置为私聊推送的用户的推送已关闭！')
 
 
-@sv_b.on_rex(r'^pcrjjc删除绑定 ?(\d{6,10})')
-@sv_qu.on_rex(r'^渠pcrjjc删除绑定 ?(\d{6,10})')
-@sv_tw.on_rex(r'^台pcrjjc删除绑定 ?(\d{6,10})')
-async def del_binds(bot: HoshinoBot, ev: CQEvent):
-    if not priv.check_priv(ev, priv.SUPERUSER):
+@on_command('del_binds', aliases=('pcrjjc删除绑定', '渠pcrjjc删除绑定', '台pcrjjc删除绑定'), only_to_me=False)
+async def del_binds(session: NoticeSession):
+   # 检查是否为超级用户
+    if not session.ctx.user_id in SUPERUSERS:
         return
-    ret: re.Match = ev["match"]
-    qid = int(ret.group(1))
-    platform_id = get_platform_id(ev)
+    # 获取命令参数（QQ号）
+    qq_num = session.current_arg_text.strip()
+    if not qq_num or not qq_num.isdigit() or not (6 <= len(qq_num) <= 10):
+        await session.send('请输入正确的QQ号，格式：pcrjjc删除绑定 [QQ号]')
+        return
+    
+    qid = int(qq_num)
+    platform_id = get_platform_id(session.event)
+    
+    # 查询并删除绑定
     user_bind: List[PCRBind] = await pcr_sqla.get_bind(platform_id, qid)
     if user_bind:
         await pcr_sqla.delete_bind(qid, platform_id)
-        reply = '删除成功！'
+        await session.send('删除成功！')
     else:
-        reply = '绑定列表中找不到这个qq号！'
-    await bot.send(ev, reply)
-
+        await session.send('绑定列表中找不到这个QQ号！')
 # ========================================头像框========================================
 
 # 头像框设置文件不存在就创建文件，并且默认彩色
@@ -500,9 +585,3 @@ async def leave_notice(session: NoticeSession):
         bot = get_bot()
         await pcr_sqla.delete_bind(uid, group=gid)
         await bot.send_group_msg(group_id=gid, message=f'{uid}退群了，已自动删除其绑定在本群的竞技场订阅推送')
-
-
-@sv.on_command('update_device_id', aliases=('pcrjjc换设备id', 'pcrjjc更新设备id'), only_to_me=False)
-async def update_device_id(session: NoticeSession):
-    init_device_id(clear_id = True)
-    await session.send('pcrjjc更新设备id成功！重启bot生效新设备id')

@@ -8,12 +8,97 @@ from hoshino import util
 from hoshino.util import pic2b64
 from .database.dal import JJCHistory, pcr_sqla, PCRBind
 from .query import query_all
-from .img.create_img import generate_info_pic, generate_support_pic
+from .img.create_img import generate_info_pic, generate_support_pic, generate_talent_pic
 from ..multicq_send import group_send, private_send
 from nonebot import MessageSegment, logger
 from hoshino.typing import CQEvent
 from .var import NoticeType, Platform, platform_dict, platform_tw, query_cache, cache, lck, jjc_log
+import csv
+import os
+from hoshino import Service, priv
+from .img.rank_parse import query_knight_exp_rank
+sv = Service('场号查询', enable_on_default=False, help_='输入"查群号XXX"查询对应场号的群号')
 
+# 获取当前文件所在目录的绝对路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 构造CSV文件的相对路径（相对于当前模块目录）
+# 相对于当前文件的相对路径
+CSV_PATH = os.path.join(current_dir, "20250430.csv")
+P_CSV_PATH = os.path.join(current_dir, "20251030.csv")
+# 存储场号-群号映射
+field_data = {}
+p_field_data = {}
+
+def load_csv_data():
+    """从CSV文件加载数据"""
+    global field_data, p_field_data
+    field_data.clear()
+    p_field_data.clear()
+    try:
+        # 加载J场数据
+        with open(CSV_PATH, 'r', encoding='utf-8-sig') as f:  # utf-8-sig处理BOM头
+            reader = csv.reader(f)
+            next(reader)  # 跳过标题行
+            for row in reader:
+                if len(row) >= 2 and row[0].isdigit() and row[1].isdigit():
+                    field_data[int(row[0])] = row[1].strip()
+        sv.logger.info(f"成功从CSV加载 {len(field_data)} 条J场场号数据")
+        
+        # 加载P场数据
+        with open(P_CSV_PATH, 'r', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader)  # 跳过标题行
+            for row in reader:
+                if len(row) >= 2 and row[0].isdigit() and row[1].isdigit():
+                    p_field_data[int(row[0])] = row[1].strip()
+        sv.logger.info(f"成功从CSV加载 {len(p_field_data)} 条P场场号数据")
+    except Exception as e:
+        sv.logger.error(f"加载CSV文件失败: {e}")
+
+# 启动时加载数据
+load_csv_data()
+
+@sv.on_prefix('#查群号')
+async def query_group_number(bot, ev: CQEvent):
+    """查询场号对应的群号"""
+    if not field_data or not p_field_data:
+        await bot.send(ev, "数据加载失败，请联系管理员检查CSV文件")
+        return
+    
+    field = ev.message.extract_plain_text().strip()
+    if not field:
+        await bot.send(ev, "请输入场号，例如：查群号123")
+        return
+    
+    if not field.isdigit():
+        await bot.send(ev, "场号必须是数字，例如：查群号123")
+        return
+    
+    field_num = int(field)
+    j_group_num = field_data.get(field_num)
+    p_group_num = p_field_data.get(field_num)
+    
+    if j_group_num or p_group_num:
+        msg = []
+        if j_group_num:
+            msg.append(f"J场{field_num}的群号是：{j_group_num}")
+        if p_group_num:
+            msg.append(f"P场{field_num}的群号是：{p_group_num}")
+        await bot.send(ev, "\n".join(msg))
+    else:
+        await bot.send(ev, f"未找到场号{field_num}对应的群号")
+
+@sv.on_fullmatch('重载场号数据')
+async def reload_data(bot, ev: CQEvent):
+    """手动重载数据"""
+    if not priv.check_priv(ev, priv.ADMIN):
+        await bot.send(ev, "只有管理员才能执行此操作")
+        return
+    
+    await bot.send(ev, "正在重新加载场号数据...")
+    load_csv_data()
+    await bot.send(ev, f"场号数据已重新加载，共{len(field_data)}条J场记录，{len(p_field_data)}条P场记录")
+    
 class ApiException(Exception):
 
     def __init__(self, message, code):
@@ -92,8 +177,11 @@ async def detial_query(data):
         result_support = await generate_support_pic(res, pcrid)
         result_support = pic2b64(result_support)  # 转base64发送，不用将图片存本地
         result_support = MessageSegment.image(result_support)
+        talent_image = await generate_talent_pic(res)
+        talent_image = pic2b64(talent_image)  # 转base64发送，不用将图片存本地
+        talent_image = MessageSegment.image(talent_image)
         logger.info('竞技场查询图片已准备完毕！')
-        await bot.send_group_msg(self_id=ev.self_id, group_id=int(ev.group_id), message=f"\n{str(result_image)}\n{result_support}")
+        await bot.send(ev, f"{str(result_image)}\n{result_support}\n{talent_image}", at_sender=True)
     except ApiException as e:
         await bot.send_group_msg(self_id=ev.self_id, group_id=int(ev.group_id), message=f'查询出错，{e}')
 
@@ -103,27 +191,83 @@ async def user_query(data: dict):
     pcrid = data["uid"]
     info = data["info"]
     platfrom = data["platform"]
+    show_group = data.get("show_group", False)  # 控制是否显示群号
+    
     try:
         res = data["res"]['user_info']
+        # 处理最近登录时间
         last_login = datetime.fromtimestamp(
-            int(res["last_login_time"])).strftime("%H：%M")
+            int(res["last_login_time"])).strftime("%m-%d %H：%M")
+        # 获取JJC/PJC上升次数
         jjc_up, grand_jjc_up = await pcr_sqla.get_up_num(platfrom, pcrid, int(datetime.now().timestamp()))
-        extra = "" if platfrom != Platform.tw_id.value else f"服务器：{get_tw_platform(pcrid)}\n"
-        extra += f'''上升: {jjc_up}次 / {grand_jjc_up}次\n'''
-        query = f'【{info[pcrid]+1}】{util.filt_message(str(res["user_name"]))}\n{res["arena_rank"]}({res["arena_group"]}场) / {res["grand_arena_rank"]}({res["grand_arena_group"]}场)\n{extra}最近上号{last_login}\n\n'
-    except:
+
+        # 1. 构建基础额外信息（含服务器、上升次数、骑士信息）
+        extra = ""
+        if platfrom == Platform.tw_id.value:
+            extra += f"服务器：{get_tw_platform(pcrid)}\n"
+        extra += f'''jjc上升: {jjc_up}次 / pjjc上升:{grand_jjc_up}次'''
+
+        # 2. 场号与群号匹配{}
+        arena_group = res["arena_group"]
+        grand_arena_group = res["grand_arena_group"]
+        j_group_num = field_data.get(int(arena_group), "未知")  # J场群号
+        p_group_num = p_field_data.get(int(grand_arena_group), "未知")  # P场群号
+        
+        # 3. 拼接最终查询文本（区分显示/不显示群号）
+        if show_group:
+            query = (f'【{info[pcrid]+1}】昵称:{util.filt_message(str(res["user_name"]))}\n'
+                     f'jjc:{res["arena_rank"]}({arena_group}场,B服J群号:{j_group_num}) \n'
+                     f'pjjc:{res["grand_arena_rank"]}({grand_arena_group}场,B服P群号:{p_group_num})\n'
+                     f'{extra}\n最近上号{last_login}\n')
+        else:
+            query = (f'【{info[pcrid]+1}】昵称:{util.filt_message(str(res["user_name"]))}\n'
+                     f'jjc:{res["arena_rank"]}({arena_group}场)\n'
+                     f'pjjc:{res["grand_arena_rank"]}({grand_arena_group}场)\n'
+                     f'{extra}\n最近上号{last_login}\n')
+    
+    except Exception as e:
+        logger.error(f"user_query 逻辑处理失败: {str(e)}")
         logger.error(traceback.print_exc())
-        query = "查询失败"
+        query = "查询失败（数据解析错误）\n\n"
 
     async with lck:
         ev = data["ev"]
+        bot = data["bot"]
+        # 初始化/添加查询结果到缓存列表
+        if ev.user_id not in query_cache:
+            query_cache[ev.user_id] = []
         query_list: list = query_cache[ev.user_id]
         query_list.append(query)
+        
+        # 当所有查询完成（列表长度=查询数量），发送结果
         if len(query_list) == len(info):
-            bot = data["bot"]
-            query_list.sort()
-            pic = image_draw(''.join(query_list))
-            await bot.send_group_msg(self_id=ev.self_id, group_id=int(ev.group_id), message=f'[CQ:image,file={pic}]')
+            msg = ''.join(query_list)
+            # 处理长消息（>800字符转图片）
+            if len(msg) > 800:
+                msg = f'[CQ:image,file={image_draw(msg)}]'  # 调用text2img生成图片
+            
+            # 适配 FakeEvent：手动指定发送目标（群聊/私聊）
+            try:
+                if hasattr(ev, 'group_id') and ev.group_id:
+                    # 群聊场景：用send_group_msg避免解析event.items()
+                    await bot.send_group_msg(
+                        self_id=ev.self_id,
+                        group_id=int(ev.group_id),
+                        message=msg
+                    )
+                elif hasattr(ev, 'user_id') and ev.user_id:
+                    # 私聊场景：用send_private_msg
+                    await bot.send_private_msg(
+                        self_id=ev.self_id,
+                        user_id=int(ev.user_id),
+                        message=msg
+                    )
+            except Exception as send_e:
+                logger.error(f"user_query 消息发送失败: {str(send_e)}")
+                logger.error(traceback.print_exc())
+            
+            # 清空当前用户的查询缓存
+            del query_cache[ev.user_id]
 
 
 async def bind_pcrid(data):
@@ -136,7 +280,7 @@ async def bind_pcrid(data):
         qid = ev.user_id
         have_bind: List[PCRBind] = await pcr_sqla.get_bind(info["platform"], qid)
         bind_num = len(have_bind)
-        if bind_num >= 8:
+        if bind_num >= 999:
             reply = '您订阅了太多账号啦！'
         elif pcrid in [bind.pcrid for bind in have_bind]:
             reply = '这个uid您已经订阅过了，不要重复订阅！'
@@ -160,9 +304,9 @@ async def sendNotice(new: int, old: int, info: PCRBind, noticeType: int):
         else:
             change = '\npjjc: '
         if new < old:
-            change += f'''{old}->{new} [▲{old-new}]'''
+            change += f'''{old}->{new} [↑{old-new}]'''
         else:
-            change += f'''{old}->{new} [▽{new-old}]'''
+            change += f'''{old}->{new} [↓{new-old}]'''
 # -----------------------------------------------------------------
     msg = ''
     onlineNotice = False

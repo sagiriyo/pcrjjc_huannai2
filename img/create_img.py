@@ -7,7 +7,7 @@ import zhconv
 from hoshino.aiorequests import run_sync_func
 from hoshino import util
 from ..var import Platform
-
+from .rank_parse import query_knight_exp_rank
 path = Path(__file__).parent # 获取文件所在目录的绝对路径
 font_cn_path = str(path / 'fonts' / 'SourceHanSansCN-Medium.otf')  # Path是路径对象，必须转为str之后ImageFont才能读取
 font_tw_path = str(path / 'fonts' / 'pcrtwfont.ttf')
@@ -263,6 +263,77 @@ def _generate_support_pic_internal(data, uid):
             bbox = (665, 459)
             im = _clan_support_position(clan_data, im, fnt, rgb, im_frame, bbox)
     
+    return im
+
+# 生成深域进度图片
+async def generate_talent_pic(data):
+    im = Image.open(path / 'img' / 'background.png').convert("RGBA")
+    fnt = ImageFont.truetype(font=font_cn_path, size=40)
+    rgb = ImageColor.getrgb('#4e4e4e')
+    rgb_w = ImageColor.getrgb('#ffffff')
+
+    talent_quest = data['quest_info']['talent_quest']
+    knight_exp = data['user_info']['princess_knight_rank_total_exp']
+
+    quest_draw = ImageDraw.Draw(im)
+    for talent in talent_quest:
+        # 通关关数
+        quest = '1-1'
+        clear_count = int(talent['clear_count'])
+        if clear_count:
+            char = (clear_count - 1) // 10 + 1
+            que_num = clear_count % 10
+            que_num = que_num if que_num else 10
+            quest = str(char) + '-' + str(que_num)
+
+        if talent['talent_id'] == 1:
+            bbox = (200, 290)
+            item_img = Image.open(path / 'img' / 'talent_quest' / 'fire.png').convert("RGBA")
+            item_img = item_img.resize((240, 320))
+            im.paste(im=item_img, box=bbox, mask=item_img)
+            quest_draw.text(xy=(280, 650), text=quest, font=fnt, fill=rgb)
+
+        elif talent['talent_id'] == 2:
+            bbox = (520, 290)
+            item_img = Image.open(path / 'img' / 'talent_quest' / 'water.png').convert("RGBA")
+            item_img = item_img.resize((240, 320))
+            im.paste(im=item_img, box=bbox, mask=item_img)
+            quest_draw.text(xy=(600, 650), text=quest, font=fnt, fill=rgb)
+
+        elif talent['talent_id'] == 3:
+            bbox = (840, 290)
+            item_img = Image.open(path / 'img' / 'talent_quest' / 'wind.png').convert("RGBA")
+            item_img = item_img.resize((240, 320))
+            im.paste(im=item_img, box=bbox, mask=item_img)
+            quest_draw.text(xy=(920, 650), text=quest, font=fnt, fill=rgb)
+
+        elif talent['talent_id'] == 4:
+            bbox = (1160, 290)
+            item_img = Image.open(path / 'img' / 'talent_quest' / 'light.png').convert("RGBA")
+            item_img = item_img.resize((240, 320))
+            im.paste(im=item_img, box=bbox, mask=item_img)
+            quest_draw.text(xy=(1240, 650), text=quest, font=fnt, fill=rgb)
+
+        elif talent['talent_id'] == 5:
+            bbox = (1480, 290)
+            item_img = Image.open(path / 'img' / 'talent_quest' / 'darkness.png').convert("RGBA")
+            item_img = item_img.resize((240, 320))
+            im.paste(im=item_img, box=bbox, mask=item_img)
+            quest_draw.text(xy=(1560, 650), text=quest, font=fnt, fill=rgb)
+
+    # 公主骑士经验和等级
+    knight_img = Image.open(path / 'img' / 'talent_quest' / 'knight_rank.png').convert("RGBA")
+    knight_img = knight_img.resize((517, 61))
+    bbox = (701, 729)
+    im.paste(im=knight_img, box=bbox, mask=knight_img)
+    quest_draw.text(xy=(735, 740), text='公主骑士经验', font=fnt, fill=rgb_w)
+    quest_draw.text(xy=(1035, 738), text=str(knight_exp), font=fnt, fill=rgb)
+    bbox = (701, 849)
+    im.paste(im=knight_img, box=bbox, mask=knight_img)
+    quest_draw.text(xy=(725, 860), text='公主骑士RANK', font=fnt, fill=rgb_w)
+    knight_rank = await query_knight_exp_rank(knight_exp)
+    quest_draw.text(xy=(1080, 858), text=str(knight_rank), font=fnt, fill=rgb)
+
     return im
 
 async def generate_support_pic(*args, **kwargs):
