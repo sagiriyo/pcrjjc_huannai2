@@ -24,7 +24,7 @@ from hoshino import priv, Service
 from hoshino.config import SUPERUSERS
 from hoshino.typing import HoshinoBot, CQEvent
 from nonebot import NoticeSession, MessageSegment
-from .utils import bind_pcrid, detial_query, get_platform_id, get_tw_platform, query_loop, user_query, get_qid
+from .utils import bind_pcrid, detial_query, get_platform_id, get_tw_platform, query_loop, user_query, user_query_arena_count, get_qid
 from .query import login_all, query_all
 from .var import BaseSet, LoadBase, platform_dict, query_cache, queue_dict, private_dict, Platform, Priority
 from .tool import refresh_account
@@ -63,6 +63,8 @@ jjc/pjjc当天排名上升次数、最后登录时间。
 6）{platform_name}竞技场修改昵称 [绑定的序号] [新昵称]
 7）{platform_name}竞技场设置[开启/关闭][订阅内容][绑定的序号]
 8）{platform_name}竞技场/击剑记录[绑定的序号]（序号可省略）
+8.5）{platform_name}查场次[绑定的序号/uid]
+# 已绑定用户可省略或用序号查询，未绑定用户跟uid查询
 9）{platform_name}竞技场设置1110[绑定的序号]
 # 0表示关闭，1表示开启
 # 4个数字依次代表jjc、pjjc、排名上升、上线提醒
@@ -118,6 +120,53 @@ async def on_query_arena(bot: HoshinoBot, ev: CQEvent):
             query_dict[bind.pcrid] = i
     query_cache[ev.user_id] = []
     await query_all(query_list, platform_id, user_query, {"bot": bot, "ev": ev, "info": query_dict, "platform": platform_id, "show_group": False}, Priority.query_user.value)
+
+# ========================================查场次========================================
+
+
+@sv_b.on_rex(r'^查场次 ?(\d+)?$')
+@sv_qu.on_rex(r'^渠查场次 ?(\d+)?$')
+@sv_tw.on_rex(r'^台查场次 ?(\d+)?$')
+async def on_query_arena_count(bot: HoshinoBot, ev: CQEvent):
+    ret: re.Match = ev['match']
+    qid = get_qid(ev)
+    platform_id = get_platform_id(ev)
+    query_dict: Dict[int, int] = {}
+
+    if ret.group(1):
+        input_str = ret.group(1)
+        valid_len = 13 if platform_id != Platform.tw_id.value else 10
+
+        if len(input_str) == valid_len:
+            pcrid = int(input_str)
+            query_list = [PCRBind(platform=platform_id, pcrid=pcrid)]
+            query_dict[pcrid] = 0
+        elif len(input_str) <= 2:
+            idx = int(input_str)
+            user_bind: List[PCRBind] = await pcr_sqla.get_bind(platform_id, qid)
+            if not user_bind:
+                await bot.send(ev, '您还没有绑定竞技场！请在后面跟上uid查询')
+                return
+            if idx < 1 or idx > len(user_bind):
+                await bot.send(ev, '序号超出范围，请检查您绑定的竞技场列表')
+                return
+            bind = user_bind[idx - 1]
+            query_list = [bind]
+            query_dict[bind.pcrid] = idx - 1
+        else:
+            await bot.send(ev, f'位数不对，uid是{valid_len}位的！')
+            return
+    else:
+        query_list: List[PCRBind] = await pcr_sqla.get_bind(platform_id, qid)
+        if not query_list:
+            await bot.send(ev, '您还没有绑定竞技场！请在后面跟上uid查询')
+            return
+        for i, bind in enumerate(query_list):
+            query_dict[bind.pcrid] = i
+
+    query_cache[ev.user_id] = []
+    await query_all(query_list, platform_id, user_query_arena_count, {"bot": bot, "ev": ev, "info": query_dict, "platform": platform_id}, Priority.query_user.value)
+
 
 @sv_b.on_notice('notify.poke')
 async def poke_notice(session: NoticeSession):
