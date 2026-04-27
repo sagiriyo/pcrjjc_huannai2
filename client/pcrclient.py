@@ -102,8 +102,14 @@ class pcrclient:
             data_str += '=' * (4 - missing_padding)
 
         data = b64decode(data_str)
+        if len(data) <= 32:
+            raise ValueError("响应数据过短，无法解密")
+        encrypted = data[:-32]
+        if len(encrypted) % 16 != 0:
+            pad_len = 16 - (len(encrypted) % 16)
+            encrypted += b'\x00' * pad_len
         aes = AES.new(data[-32:], AES.MODE_CBC, b'7Fk9Lm3Np8Qr4Sv2')
-        return aes.decrypt(data[:-32]), data[-32:]
+        return aes.decrypt(encrypted), data[-32:]
 
     @staticmethod
     def unpack(data: bytes):
@@ -114,8 +120,14 @@ class pcrclient:
             data_str += '=' * (4 - missing_padding)
             
         data = b64decode(data_str)
+        if len(data) <= 32:
+            raise ValueError("响应数据过短，无法解密")
+        encrypted = data[:-32]
+        if len(encrypted) % 16 != 0:
+            pad_len = 16 - (len(encrypted) % 16)
+            encrypted += b'\x00' * pad_len
         aes = AES.new(data[-32:], AES.MODE_CBC, b'7Fk9Lm3Np8Qr4Sv2')
-        dec = aes.decrypt(data[:-32])
+        dec = aes.decrypt(encrypted)
         MAX_MSG_LIMIT = 4294967295 
         return unpackb(dec[:-dec[-1]], 
                        strict_map_key=False, 
