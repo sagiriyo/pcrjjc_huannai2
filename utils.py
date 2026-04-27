@@ -270,6 +270,61 @@ async def user_query(data: dict):
             del query_cache[ev.user_id]
 
 
+async def user_query_arena_count(data: dict):
+    global lck
+    pcrid = data["uid"]
+    info = data["info"]
+
+    try:
+        res = data["res"]['user_info']
+        last_login = datetime.fromtimestamp(
+            int(res["last_login_time"])).strftime("%m-%d %H：%M")
+
+        arena_group = res.get("arena_group", "?")
+        grand_arena_group = res.get("grand_arena_group", "?")
+
+        query = (f'【{info[pcrid]+1}】昵称:{util.filt_message(str(res["user_name"]))}\n'
+                 f'jjc:{arena_group}场\n'
+                 f'pjjc:{grand_arena_group}场\n'
+                 f'最近上号{last_login}\n')
+    except Exception as e:
+        logger.error(f"user_query_arena_count 逻辑处理失败: {str(e)}")
+        logger.error(traceback.print_exc())
+        query = "查询失败（数据解析错误）\n\n"
+
+    async with lck:
+        ev = data["ev"]
+        bot = data["bot"]
+        if ev.user_id not in query_cache:
+            query_cache[ev.user_id] = []
+        query_list: list = query_cache[ev.user_id]
+        query_list.append(query)
+
+        if len(query_list) == len(info):
+            msg = ''.join(query_list)
+            if len(msg) > 800:
+                msg = f'[CQ:image,file={image_draw(msg)}]'
+
+            try:
+                if hasattr(ev, 'group_id') and ev.group_id:
+                    await bot.send_group_msg(
+                        self_id=ev.self_id,
+                        group_id=int(ev.group_id),
+                        message=msg
+                    )
+                elif hasattr(ev, 'user_id') and ev.user_id:
+                    await bot.send_private_msg(
+                        self_id=ev.self_id,
+                        user_id=int(ev.user_id),
+                        message=msg
+                    )
+            except Exception as send_e:
+                logger.error(f"user_query_arena_count 消息发送失败: {str(send_e)}")
+                logger.error(traceback.print_exc())
+
+            del query_cache[ev.user_id]
+
+
 async def bind_pcrid(data):
     bot = data["bot"]
     ev = data["ev"]
